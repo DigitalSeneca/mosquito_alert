@@ -1055,16 +1055,9 @@ def string_par_to_bool(string_par):
     return False
 
 def get_cfa_reports() -> List[Dict[str, str]]:
-    new_reports_unfiltered_adults = Report.objects.annotate(
-        n_annotations=Count('expert_report_annotations')
-    ).filter(
-        type=Report.TYPE_ADULT,
-        n_annotations__lt=3
-    ).exclude(
-        Q(note__icontains='#345') |
-        Q(hide=True) |
-        Q(creation_time__year=2014)
-    ).has_photos().non_deleted()
+    new_reports_unfiltered_adults = get_reports_unfiltered_adults().filter(
+        hide=False
+    ).non_deleted()
     return list(new_reports_unfiltered_adults.values('version_UUID'))
 
 @api_view(['GET'])
@@ -1994,40 +1987,31 @@ def all_reports(request):
         return Response(serializer.data)
 
 
-def non_visible_reports_internal(year: int):
-    # TODO: finish
-    new_reports_unfiltered = Report.objects.annotate(
-        n_annotations=Count('expert_report_annotations')
-    ).filter(
-        server_upload_time__year=year,
-    ).filter(
-        Q(type=Report.TYPE_SITE) & Q(n_annotations=0) |
-        Q(type=Report.TYPE_ADULT) & Q(n_annotations__lt=3)
-    ).exclude(
-        Q(creation_time__year=2014) |
-        Q(note__icontains='#345')
-    ).has_photos().non_deleted()
+def non_visible_reports_internal(year):
+    reports_imbornal = get_reports_imbornal()
+    new_reports_unfiltered_sites_embornal = get_reports_unfiltered_sites_embornal(reports_imbornal)
+    new_reports_unfiltered_sites_other = get_reports_unfiltered_sites_other(reports_imbornal)
+    new_reports_unfiltered_sites = new_reports_unfiltered_sites_embornal | new_reports_unfiltered_sites_other
+    new_reports_unfiltered_adults = get_reports_unfiltered_adults()
 
-    non_visible_report_id = [
-        report.pk 
-        for report in Report.objects.filter(
-            server_upload_time__year=year,
-            hide=False
-        ).exclude(
-            Q(pk__in=new_reports_unfiltered.values('pk')) |
-            Q(package_name='ceab.movelab.tigatrapp') & Q(package_version=10) |
-            Q(type=Report.TYPE_MISSION)
-        ).filter(
-            package_filter
-        )
-        if not report.visible
-    ]
+    new_reports_unfiltered = new_reports_unfiltered_adults | new_reports_unfiltered_sites
 
-    hidden_reports = Report.objects.filter(
-        version_UUID__in=non_visible_report_id,
-    )
+    unfiltered_clean_reports = filter_reports(new_reports_unfiltered, False)
+    unfiltered_clean_reports_id = [report.version_UUID for report in unfiltered_clean_reports]
+    unfiltered_clean_reports_query = Report.objects.filter(version_UUID__in=unfiltered_clean_reports_id)
 
-    queryset = hidden_reports | new_reports_unfiltered
+    # new_reports_unfiltered_id = [ report.version_UUID for report in filtered_reports ]
+    non_visible_report_id = [report.version_UUID for report in
+                                 Report.objects.exclude(version_UUID__in=unfiltered_clean_reports_id) if
+                                 not report.visible]
+
+    hidden_reports = Report.objects.exclude(hide=True).exclude(type='mission').filter(
+        version_UUID__in=non_visible_report_id).filter( package_filter )\
+        .exclude(package_name='ceab.movelab.tigatrapp', package_version=10)
+
+    queryset = hidden_reports | unfiltered_clean_reports_query
+    if year is not None:
+        queryset = queryset.filter(creation_time__year=year)
 
     serializer = MapDataSerializer(queryset, many=True)
     return serializer.data
